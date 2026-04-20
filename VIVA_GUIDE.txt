@@ -1,0 +1,117 @@
+# HEALTHCARE SYSTEM - VIVA EXPLANATION GUIDE
+==========================================
+
+This guide provides a comprehensive code-wise explanation of the Healthcare System (Telemedicine Platform). Use this to explain the project structure, data flow, and key logic to inspectors.
+
+---
+
+## 1. PROJECT OVERVIEW & TECH STACK
+- **Frontend**: Next.js 14 (App Router) with TypeScript.
+- **Styling**: Tailwind CSS & Shadcn/UI for a modern, responsive interface.
+- **Backend**: Next.js API Routes (Serverless Functions).
+- **Database**: PostgreSQL (Relational Database) for structured data storage.
+- **Authentication**: NextAuth.js (Auth.js) with JWT strategy and Role-Based Access Control (RBAC).
+
+---
+
+## 2. DATABASE ARCHITECTURE (The "Heart" of the System)
+The database is structured to handle multiple user roles and complex relationships.
+- **users**: Base table for all users (email, hashed password, user_type).
+- **patients**: Profile details linked to a user.
+- **doctors**: Specialized profile for doctors (specialist, fee, availability, approval status).
+- **appointments**: Links patients and doctors with date, time, and status.
+- **consultations**: Records medical findings (diagnosis, symptoms, vitals) after an appointment.
+- **prescriptions**: Linked to consultations, storing medication details.
+- **transactions**: Tracks payments for consultations.
+- **medicals**: Managed by superadmin, representing medical stores or facilities.
+
+---
+
+## 3. CORE CODE EXPLANATIONS (Page by Page)
+
+### A. Authentication & Authorization
+- **File**: `src/lib/auth.ts` & `app/api/auth/[...nextauth]/route.ts`
+- **Explanation**: 
+  - When a user logs in, `authorize` function in `auth.ts` checks the `users` table.
+  - It uses `bcryptjs` to compare the entered password with the hashed one in the DB.
+  - It fetches role-specific details (e.g., from `patients` or `doctors` table) and attaches them to the session.
+  - **Key Logic**: Doctors cannot log in unless their `approval_status` is 'approved'.
+
+### B. Patient Dashboard & Appointment Booking
+- **Page**: `app/(dashboard)/patient/book-appointment/page.tsx`
+- **API**: `app/api/appointments/route.ts`
+- **Flow**:
+  1. Patient selects a doctor and a time slot.
+  2. Frontend sends a `POST` request to `/api/appointments`.
+  3. **Backend Logic**: 
+     - Checks if the slot is already booked (`SELECT` query).
+     - Uses a **Database Transaction** (`src/lib/db.ts`) to ensure data integrity.
+     - Inserts into `appointments` and generates a unique `appointment_code` (e.g., APT-000001).
+     - Mocks an SMS notification to the doctor.
+
+### C. AI Doctor Recommendation (RAG-like Logic)
+- **API**: `app/api/ai/recommend-doctor/route.ts`
+- **Explanation**: 
+  - The patient enters symptoms.
+  - The code maps these symptoms to medical specialties (e.g., "heart" -> "Cardiologist").
+  - It then searches the `doctors` table for matches and ranks them by their `star_ratings`.
+  - This provides an intelligent way to find the right doctor.
+
+### D. Doctor's Consultation Flow
+- **Page**: `app/(dashboard)/doctor/consultation/page.tsx`
+- **API**: `app/api/consultations/route.ts`
+- **Flow**:
+  1. Doctor starts a consultation for an accepted appointment.
+  2. Doctor records vitals (BP, Heart Rate) and diagnosis.
+  3. When saved, the system:
+     - Updates the appointment status to 'completed'.
+     - Inserts a record into `consultations`.
+     - Creates a `transaction` entry for the consultation fee.
+
+### E. Medicalist / Prescription Search
+- **API**: `app/api/patients/search/route.ts`
+- **Explanation**:
+  - Medicalists can search for patients by ID or Code.
+  - The query joins `patients`, `consultations`, and `prescriptions` to show the full history.
+  - This allows the pharmacist to find and verify prescriptions easily.
+
+---
+
+## 4. TRANSACTION & PAYMENT PROCESS (QR & UPI)
+- **File**: `app/api/checkout/route.ts` & `app/api/admin/transactions/route.ts`
+- **Transaction Code**: Generated as `TRX-${Date.now()}` for uniqueness.
+- **UPI ID Retrieval**: 
+  - The `resolveRecipient` function fetches the `upi_id` and `name` from the `doctors` or `medicals` table based on the transaction type.
+- **QR Code Generation**: 
+  - Uses an external API (`api.qrserver.com`) to generate a QR code.
+  - The data encoded is a `upi://pay` URI containing the UPI ID, recipient name, and the amount (`pa=${upiId}&pn=${name}&am=${amount}`).
+- **Payment Verification Flow**:
+  1. **Initiate**: Patient creates a transaction (`status: 'pending'`).
+  2. **Pay**: Patient pays via the generated QR code.
+  3. **Submit**: Patient enters their **UTR (Unique Transaction Reference)** and uploads a screenshot.
+  4. **Verification**: The transaction status changes to `verification_pending`.
+  5. **Admin Approval**: The Super Admin reviews the UTR/Proof and marks the transaction as `paid`.
+  6. **Auto-Update**: Once marked as `paid`, the associated appointment's status is automatically updated to `confirmed`.
+
+---
+
+## 5. SYSTEM VALIDATIONS & SECURITY
+- **Role-Based Access Control (RBAC)**: Every API route (`GET`, `POST`, `PUT`, `PATCH`) checks the user's `userType` from the session to ensure they have permission (e.g., only admins can approve transactions).
+- **Appointment Conflicts**: The system checks for existing appointments for the same doctor at the same date and time before allowing a new booking.
+- **SQL Injection Prevention**: All database queries use parameterized inputs (`$1`, `$2`, etc.) to prevent malicious SQL code from being executed.
+- **Data Integrity**: Database transactions (BEGIN/COMMIT/ROLLBACK) are used when multiple related records are updated (e.g., creating an appointment and generating its code).
+- **Status Constraints**: Both the database (via `CHECK` constraints) and the backend code enforce valid states for appointments (`pending`, `confirmed`, etc.) and users (`active`, `inactive`).
+
+---
+
+## 6. DATABASE CONNECTION UTILITY
+- **File**: `src/lib/db.ts`
+- **Explanation**:
+  - Uses `pg` Pool for efficient connection management.
+  - `query(text, params)`: Prevents **SQL Injection** by using parameterized queries.
+  - `toCamelCase()`: A utility that converts database `snake_case` (e.g., `user_id`) to frontend `camelCase` (`userId`) automatically.
+
+---
+
+## 7. SUMMARY FOR THE INSPECTORS
+"This system is a robust Telemedicine platform built on Next.js. It features a centralized User table with role-specific extensions for Patients and Doctors. We implemented Role-Based Access Control to ensure data security. The data flow follows a clean 'UI -> API -> DB' architecture, utilizing database transactions for reliability and parameterized queries for security. We also integrated a mock AI recommendation engine to assist patients in finding specialized care based on their symptoms. For payments, we implemented a manual UPI/QR flow with UTR verification by the Super Admin to simulate a real-world financial transaction process safely."
