@@ -1,138 +1,237 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { query } from '@/lib/db';
+import { NextResponse } from "next/server";
+import { query } from "@/lib/db";
 
-export async function GET(req: NextRequest) {
+type FactorKey = "air" | "water" | "traffic" | "noise";
+
+type HotspotRow = {
+  area: string;
+  disease: string;
+  problem_summary: string | null;
+  patient_count: string | number;
+};
+
+type EnvironmentalFactors = {
+  traffic: string;
+  airPollution: number;
+  waterPollution: string;
+  noisePollution: string;
+  lastUpdated: string;
+};
+
+type AnalysisResult = {
+  factors: EnvironmentalFactors;
+  actualCause: string;
+  recommendation: string;
+  segments: string[];
+};
+
+const keywordSets = {
+  respiratory: ["asthma", "respiratory", "bronchitis", "cough", "wheez", "shortness of breath", "breath"],
+  waterborne: ["typhoid", "cholera", "diarrhea", "gastro", "hepatitis a", "vomit", "stomach infection"],
+  vectorBorne: ["dengue", "malaria", "mosquito", "chikungunya", "fever with chills"],
+  stressNoise: ["stress", "migraine", "headache", "anxiety", "insomnia", "sleep issue"],
+  skinAllergy: ["allergy", "eczema", "skin", "rash", "itching", "dermatitis"],
+  cardiac: ["hypertension", "cardiac", "chest pain", "heart", "bp high", "palpitation"],
+  metabolic: ["diabetes", "obesity", "sugar", "insulin resistance"],
+};
+
+const factorLabels: Record<FactorKey, string> = {
+  air: "air quality pressure",
+  water: "water contamination risk",
+  traffic: "traffic exposure",
+  noise: "noise burden",
+};
+
+function hasAny(text: string, keywords: string[]): boolean {
+  return keywords.some((keyword) => text.includes(keyword));
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function trafficLevel(score: number): string {
+  if (score >= 120) return "Extreme";
+  if (score >= 90) return "High";
+  if (score >= 60) return "Medium";
+  return "Low";
+}
+
+function waterLevel(score: number): string {
+  if (score >= 105) return "Unsafe";
+  if (score >= 75) return "Risky";
+  return "Safe";
+}
+
+function noiseLevel(score: number): string {
+  if (score >= 115) return "Extreme";
+  if (score >= 80) return "High";
+  return "Normal";
+}
+
+function buildRecommendation(primary: FactorKey): string {
+  if (primary === "water") {
+    return "Prioritize water testing, sanitation drive, and household purification support.";
+  }
+  if (primary === "air") {
+    return "Run air-quality mitigation steps: dust control, emissions checks, and mask advisories.";
+  }
+  if (primary === "noise") {
+    return "Introduce noise-reduction actions, quiet-hour enforcement, and stress-screening camps.";
+  }
+  return "Improve traffic control, reduce congestion exposure, and increase community health screening.";
+}
+
+function analyzeDiseaseAndProblem(
+  disease: string,
+  problemSummary: string | null,
+  patientCount: number,
+): AnalysisResult {
+  const text = `${disease} ${problemSummary || ""}`.toLowerCase();
+
+  const scores: Record<FactorKey, number> = {
+    air: 45,
+    water: 45,
+    traffic: 45,
+    noise: 45,
+  };
+  const segments: string[] = [];
+
+  if (hasAny(text, keywordSets.respiratory)) {
+    scores.air += 60;
+    scores.traffic += 30;
+    scores.noise += 10;
+    segments.push("Respiratory Cluster");
+  }
+  if (hasAny(text, keywordSets.waterborne)) {
+    scores.water += 70;
+    scores.air += 10;
+    segments.push("Water-Borne Cluster");
+  }
+  if (hasAny(text, keywordSets.vectorBorne)) {
+    scores.water += 50;
+    scores.noise += 10;
+    segments.push("Vector-Borne Cluster");
+  }
+  if (hasAny(text, keywordSets.stressNoise)) {
+    scores.noise += 55;
+    scores.traffic += 35;
+    segments.push("Stress/Neuro Cluster");
+  }
+  if (hasAny(text, keywordSets.skinAllergy)) {
+    scores.air += 35;
+    scores.water += 30;
+    segments.push("Skin/Allergy Cluster");
+  }
+  if (hasAny(text, keywordSets.cardiac)) {
+    scores.traffic += 40;
+    scores.air += 25;
+    scores.noise += 20;
+    segments.push("Cardio-Risk Cluster");
+  }
+  if (hasAny(text, keywordSets.metabolic)) {
+    scores.traffic += 15;
+    scores.noise += 15;
+    segments.push("Metabolic Risk Cluster");
+  }
+
+  if (segments.length === 0) {
+    segments.push("General Morbidity Cluster");
+  }
+
+  const crowdingBoost = clamp(patientCount * 4, 0, 35);
+  scores.air += Math.round(crowdingBoost * 0.35);
+  scores.water += Math.round(crowdingBoost * 0.35);
+  scores.traffic += Math.round(crowdingBoost * 0.5);
+  scores.noise += Math.round(crowdingBoost * 0.4);
+
+  const sortedFactors = (Object.entries(scores) as Array<[FactorKey, number]>).sort(
+    (a, b) => b[1] - a[1],
+  );
+  const [primary, secondary] = sortedFactors;
+
+  const factors: EnvironmentalFactors = {
+    traffic: trafficLevel(scores.traffic),
+    airPollution: clamp(Math.round(35 + scores.air * 2.1), 40, 420),
+    waterPollution: waterLevel(scores.water),
+    noisePollution: noiseLevel(scores.noise),
+    lastUpdated: new Date().toISOString(),
+  };
+
+  const actualCause = `Dominant drivers are ${factorLabels[primary[0]]} and ${factorLabels[secondary[0]]} for this disease/problem pattern.`;
+  const recommendation = buildRecommendation(primary[0]);
+
+  return { factors, actualCause, recommendation, segments };
+}
+
+export async function GET() {
   try {
-    // 1. Identify Hotspots: Areas with >= 3 patients having the same diagnosis
-    // We'll use both patients table (initial diagnosis) and consultations table (confirmed diagnosis)
-    // To simplify, let's prioritize consultations for accuracy, but fall back to patients.
-    
     const sql = `
-      WITH all_diagnoses AS (
-        SELECT 
-          TRIM(p.address) as area, 
-          TRIM(c.diagnosis) as disease
-        FROM consultations c
-        JOIN patients p ON c.patient_id = p.id
-        WHERE c.diagnosis IS NOT NULL AND p.address IS NOT NULL AND p.address != ''
-        
-        UNION ALL
-        
-        SELECT 
-          TRIM(address) as area, 
-          TRIM(diagnosis) as disease
-        FROM patients
-        WHERE diagnosis IS NOT NULL AND address IS NOT NULL AND address != ''
-        AND id NOT IN (SELECT patient_id FROM consultations)
+      WITH latest_condition AS (
+        SELECT
+          p.id AS patient_id,
+          TRIM(p.address) AS area,
+          COALESCE(NULLIF(TRIM(c.diagnosis), ''), NULLIF(TRIM(p.diagnosis), ''), 'General') AS disease,
+          COALESCE(NULLIF(TRIM(c.symptoms_observed), ''), NULLIF(TRIM(p.symptoms), ''), '') AS problem
+        FROM patients p
+        LEFT JOIN LATERAL (
+          SELECT diagnosis, symptoms_observed
+          FROM consultations c
+          WHERE c.patient_id = p.id
+          ORDER BY c.consultation_date DESC, c.created_at DESC
+          LIMIT 1
+        ) c ON TRUE
+        WHERE p.address IS NOT NULL
+          AND TRIM(p.address) <> ''
       )
-      SELECT 
-        area, 
-        disease, 
-        COUNT(*) as patient_count
-      FROM all_diagnoses
+      SELECT
+        area,
+        disease,
+        NULLIF(STRING_AGG(DISTINCT NULLIF(problem, ''), ' | '), '') AS problem_summary,
+        COUNT(*) AS patient_count
+      FROM latest_condition
       GROUP BY area, disease
-      HAVING COUNT(*) >= 3
-      ORDER BY patient_count DESC
+      HAVING COUNT(*) >= 2
+      ORDER BY patient_count DESC, area ASC
+      LIMIT 50
     `;
 
     const res = await query(sql);
-    const hotspots = res.rows || [];
+    const hotspots = (res.rows || []) as HotspotRow[];
 
-    // 2. Enrich with dynamic AI-driven analysis (Simulating MCP/Web Search context)
-    const enrichedHotspots = hotspots.map((h: any) => {
-      const analysis = analyzeAreaAndDisease(h.area, h.disease);
-      
+    const enrichedHotspots = hotspots.map((hotspot) => {
+      const patientCount = Number(hotspot.patient_count || 0);
+      const analysis = analyzeDiseaseAndProblem(
+        hotspot.disease,
+        hotspot.problem_summary,
+        patientCount,
+      );
+
       return {
-        ...h,
-        environmentalFactors: {
-          ...analysis.factors,
-          lastUpdated: new Date().toISOString()
-        },
+        area: hotspot.area,
+        disease: hotspot.disease,
+        problemSummary: hotspot.problem_summary || "Not specified",
+        patient_count: patientCount,
+        environmentalFactors: analysis.factors,
         actualCause: analysis.actualCause,
         recommendation: analysis.recommendation,
-        methodology: "Contextual Analysis (MCP-informed)"
+        segments: analysis.segments,
+        methodology: "Dynamic disease/problem correlation model",
       };
     });
 
-    return NextResponse.json({ 
-      success: true, 
+    return NextResponse.json({
+      success: true,
       data: enrichedHotspots,
       summary: {
         totalHotspots: enrichedHotspots.length,
-        mostAffectedArea: enrichedHotspots[0]?.area || 'N/A',
-        mostCommonDisease: enrichedHotspots[0]?.disease || 'N/A'
-      }
+        mostAffectedArea: enrichedHotspots[0]?.area || "N/A",
+        mostCommonDisease: enrichedHotspots[0]?.disease || "N/A",
+      },
     });
   } catch (error) {
     console.error("Error in disease-hotspots API:", error);
-    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
+    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
 
-function analyzeAreaAndDisease(area: string, disease: string) {
-  const areaLower = area.toLowerCase();
-  const diseaseLower = disease.toLowerCase();
-  
-  // 1. Identify Area Type and Base Factors based on keyword analysis
-  let factors = {
-    traffic: 'Medium',
-    airPollution: 80,
-    waterPollution: 'Safe',
-    noisePollution: 'Normal'
-  };
-
-  let areaType = 'Urban';
-
-  if (areaLower.includes('industrial') || areaLower.includes('textile') || areaLower.includes('factory')) {
-    factors = { traffic: 'High', airPollution: 280, waterPollution: 'Risky', noisePollution: 'High' };
-    areaType = 'Industrial';
-  } else if (areaLower.includes('slum') || areaLower.includes('crowded') || areaLower.includes('old city')) {
-    factors = { traffic: 'High', airPollution: 150, waterPollution: 'Unsafe', noisePollution: 'Extreme' };
-    areaType = 'High-Density Residential';
-  } else if (areaLower.includes('marsh') || areaLower.includes('river') || areaLower.includes('coastal') || areaLower.includes('water')) {
-    factors = { traffic: 'Low', airPollution: 60, waterPollution: 'Unsafe', noisePollution: 'Normal' };
-    areaType = 'Water-Proximate';
-  } else if (areaLower.includes('construction') || areaLower.includes('site')) {
-    factors = { traffic: 'Medium', airPollution: 350, waterPollution: 'Safe', noisePollution: 'Extreme' };
-    areaType = 'Construction Zone';
-  } else if (areaLower.includes('traffic') || areaLower.includes('hub') || areaLower.includes('highway')) {
-    factors = { traffic: 'Extreme', airPollution: 220, waterPollution: 'Safe', noisePollution: 'High' };
-    areaType = 'Traffic Hub';
-  }
-
-  // 2. Determine Actual Cause (Informed by Web/AI knowledge of health hazards)
-  let actualCause = "Multiple environmental factors detected.";
-  let recommendation = "General health checkup recommended for residents.";
-
-  if (diseaseLower.includes('asthma') || diseaseLower.includes('respiratory') || diseaseLower.includes('cough')) {
-    if (areaType === 'Industrial') {
-      actualCause = "High concentrations of PM2.5 and industrial chemical emissions detected in the vicinity.";
-      recommendation = "Deploy air filtration systems and enforce emission controls on nearby factories.";
-    } else if (areaType === 'Construction Zone') {
-      actualCause = "Excessive silica dust and particulate matter from ongoing construction activities.";
-      recommendation = "Mandatory water spraying for dust suppression and N95 masks for residents.";
-    } else {
-      actualCause = "Elevated urban smog and vehicle exhaust (Diesel Particulate Matter).";
-      recommendation = "Public health advisory: Wear masks and limit outdoor activities during peak hours.";
-    }
-  } else if (diseaseLower.includes('typhoid') || diseaseLower.includes('cholera') || diseaseLower.includes('diarrhea')) {
-    actualCause = "Contamination of local groundwater due to poor drainage or broken sewage lines.";
-    recommendation = "Immediate water quality testing and distribution of chlorine tablets/purification kits.";
-  } else if (diseaseLower.includes('dengue') || diseaseLower.includes('malaria')) {
-    actualCause = "Stagnant water pools providing breeding grounds for Aedes/Anopheles mosquitoes.";
-    recommendation = "Intensive mosquito control operations and elimination of stagnant water bodies.";
-  } else if (diseaseLower.includes('skin') || diseaseLower.includes('allergy')) {
-    if (areaType === 'Industrial' || areaType === 'Water-Proximate') {
-      actualCause = "Exposure to untreated industrial effluents or contaminated water bodies.";
-      recommendation = "Environmental audit of local industries and public warning against contact with local water.";
-    } else {
-      actualCause = "High levels of airborne allergens and dust mites in crowded conditions.";
-      recommendation = "Hygiene awareness campaign and improved ventilation in residential units.";
-    }
-  } else if (diseaseLower.includes('migraine') || diseaseLower.includes('stress')) {
-    actualCause = "Chronic noise pollution exceeding 85dB and high-intensity traffic congestion.";
-    recommendation = "Implement noise barriers and redirect heavy vehicle traffic during night hours.";
-  }
-
-  return { factors, actualCause, recommendation };
-}

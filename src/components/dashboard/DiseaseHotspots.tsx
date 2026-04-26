@@ -10,6 +10,7 @@ import { toast } from "sonner";
 interface Hotspot {
   area: string;
   disease: string;
+  problemSummary?: string;
   patient_count: number;
   environmentalFactors: {
     traffic: string;
@@ -18,6 +19,8 @@ interface Hotspot {
     noisePollution: string;
     lastUpdated: string;
   };
+  segments?: string[];
+  actualCause?: string;
   recommendation: string;
 }
 
@@ -195,7 +198,26 @@ export function DiseaseHotspots() {
                         {hotspot.disease} Outbreak
                       </p>
                     </div>
+                    {hotspot.problemSummary ? (
+                      <p className="text-xs text-muted-foreground mt-2 leading-relaxed line-clamp-2">
+                        Problem Pattern: {hotspot.problemSummary}
+                      </p>
+                    ) : null}
                   </div>
+
+                  {hotspot.segments?.length ? (
+                    <div className="flex flex-wrap gap-2 mb-6">
+                      {hotspot.segments.slice(0, 3).map((segment, idx) => (
+                        <Badge
+                          key={`${segment}-${idx}`}
+                          variant="outline"
+                          className="font-black text-[9px] uppercase tracking-widest"
+                        >
+                          {segment}
+                        </Badge>
+                      ))}
+                    </div>
+                  ) : null}
 
                   <div className="grid grid-cols-2 gap-3 mb-8">
                     <div className="p-4 bg-muted/30 rounded-2xl border border-border flex flex-col gap-1 hover:bg-card hover:border-blue-500/30 transition-all duration-300">
@@ -235,6 +257,11 @@ export function DiseaseHotspots() {
                       <AlertTriangle className="h-4 w-4 text-orange-600 group-hover:text-white" />
                       <span className="text-[10px] font-black uppercase tracking-widest text-orange-900 dark:text-orange-400 group-hover:text-white">AI Health Advisory</span>
                     </div>
+                    {hotspot.actualCause ? (
+                      <p className="text-[11px] font-semibold mb-2 opacity-80 group-hover:opacity-100">
+                        Cause: {hotspot.actualCause}
+                      </p>
+                    ) : null}
                     <p className="text-xs font-bold leading-relaxed opacity-80 group-hover:opacity-100">
                       {hotspot.recommendation}
                     </p>

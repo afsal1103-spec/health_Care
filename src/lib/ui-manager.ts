@@ -164,6 +164,27 @@ export const menuItems: MenuItem[] = [
     roles: ["doctor"],
   },
   {
+    key: "medicalist-dashboard",
+    label: "Dashboard",
+    icon: "LayoutDashboard",
+    path: "/dashboard/medicalist",
+    roles: ["medicalist"],
+  },
+  {
+    key: "medicalist-patient-search",
+    label: "Patient Search",
+    icon: "Search",
+    path: "/dashboard/medicalist/patient-search",
+    roles: ["medicalist"],
+  },
+  {
+    key: "dispense-medications",
+    label: "Stock & Dispense",
+    icon: "Pill",
+    path: "/dashboard/medicalist/prescriptions",
+    roles: ["medicalist"],
+  },
+  {
     key: "profile",
     label: "Profile Settings",
     icon: "User",

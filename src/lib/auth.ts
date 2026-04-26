@@ -36,7 +36,7 @@ export const authOptions: NextAuthOptions = {
             return null;
           }
 
-          let roleDetails: any = null;
+          let roleDetails: Record<string, unknown> | null = null;
           if (user.user_type === "patient") {
             const res = await query(
               "SELECT * FROM patients WHERE user_id = $1",
@@ -59,6 +59,16 @@ export const authOptions: NextAuthOptions = {
               console.warn("Doctor account pending approval:", credentials.email);
               throw new Error("Your account is pending approval by the Super Admin.");
             }
+          } else if (user.user_type === "medicalist") {
+            const res = await query(
+              "SELECT * FROM medicalists WHERE user_id = $1",
+              [user.id],
+            );
+            if (res.rows.length === 0) {
+              console.error("Medicalist profile not found for user:", user.id);
+              return null;
+            }
+            roleDetails = toCamelCase(res.rows[0]);
           } else if (user.user_type === "superadmin") {
             // superadmin has no dedicated role table — synthesize roleDetails from users row
             roleDetails = {
@@ -74,10 +84,11 @@ export const authOptions: NextAuthOptions = {
             userType: user.user_type,
             roleDetails,
           };
-        } catch (error: any) {
+        } catch (error: unknown) {
           console.error("Auth error:", error);
           // If it's a known error message, throw it for NextAuth to catch
-          if (error.message && error.message.includes("approval")) {
+          const message = error instanceof Error ? error.message : "";
+          if (message.includes("approval")) {
             throw error;
           }
           return null;
@@ -110,3 +121,4 @@ export const authOptions: NextAuthOptions = {
     strategy: "jwt",
   },
 };
+
