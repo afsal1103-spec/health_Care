@@ -111,7 +111,7 @@ export async function GET(request: NextRequest) {
     }
 
     const inventoryMap = new Map<string, { quantity: number; unitPrice: number }>();
-    for (const item of inventory) {
+    for (const item of inventory as any[]) {
       inventoryMap.set(normalizeMedicineName(String(item.medicineName || "")), {
         quantity: Number(item.quantity || 0),
         unitPrice: Number(item.unitPrice || 0),

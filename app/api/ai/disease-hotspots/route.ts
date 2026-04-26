@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { query } from "@/lib/db";
+import { getAIReasoning } from "@/lib/gemini";
 
 type FactorKey = "air" | "water" | "traffic" | "noise";
 
@@ -8,6 +9,8 @@ type HotspotRow = {
   disease: string;
   problem_summary: string | null;
   patient_count: string | number;
+  symptom_evidence_count: string | number;
+  sample_cases: Array<{ name: string; symptoms: string }> | null;
 };
 
 type EnvironmentalFactors = {
@@ -82,12 +85,25 @@ function buildRecommendation(primary: FactorKey): string {
   return "Improve traffic control, reduce congestion exposure, and increase community health screening.";
 }
 
+function extractJsonObject(text: string): string | null {
+  const cleaned = text.replace(/```json|```/gi, "").trim();
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
+  if (start === -1 || end === -1 || end <= start) return null;
+  return cleaned.slice(start, end + 1);
+}
+
 function analyzeDiseaseAndProblem(
   disease: string,
   problemSummary: string | null,
   patientCount: number,
+  sampleCases: Array<{ name: string; symptoms: string }> | null,
 ): AnalysisResult {
-  const text = `${disease} ${problemSummary || ""}`.toLowerCase();
+  const caseSymptoms = (sampleCases || [])
+    .map((c) => c?.symptoms || "")
+    .filter(Boolean)
+    .join(" ");
+  const text = `${disease} ${problemSummary || ""} ${caseSymptoms}`.toLowerCase();
 
   const scores: Record<FactorKey, number> = {
     air: 45,
@@ -164,12 +180,120 @@ function analyzeDiseaseAndProblem(
   return { factors, actualCause, recommendation, segments };
 }
 
+async function analyzeWithGemini(
+  area: string,
+  disease: string,
+  problemSummary: string | null,
+  patientCount: number,
+  sampleCases: Array<{ name: string; symptoms: string }> | null,
+  fallback: AnalysisResult,
+): Promise<AnalysisResult> {
+  const validCases = (sampleCases || []).slice(0, 10).map((c) => ({
+    name: c?.name || "Unknown",
+    symptoms: (c?.symptoms || "").trim() || "Not reported",
+  }));
+
+  const prompt = `
+You are a strict epidemiology reasoning assistant.
+Use ONLY the provided cluster evidence. Do not invent causes.
+If evidence is weak, say "Insufficient local evidence".
+
+Area: ${area}
+Disease/Condition: ${disease}
+Cluster Size: ${patientCount}
+Symptoms Summary: ${problemSummary || "Not specified"}
+Sample Cases (same area + same disease): ${JSON.stringify(validCases, null, 2)}
+
+Return ONLY valid JSON:
+{
+  "factors": {
+    "traffic": "Low|Medium|High|Extreme",
+    "airPollution": 50,
+    "waterPollution": "Safe|Risky|Unsafe",
+    "noisePollution": "Normal|High|Extreme"
+  },
+  "actualCause": "string",
+  "recommendation": "string",
+  "segments": ["string", "string"]
+}`;
+
+  const aiResult = await getAIReasoning(prompt);
+  if (!aiResult) return fallback;
+
+  try {
+    const jsonStr = extractJsonObject(aiResult);
+    if (!jsonStr) return fallback;
+    const parsed = JSON.parse(jsonStr) as {
+      factors?: Partial<EnvironmentalFactors>;
+      actualCause?: string;
+      recommendation?: string;
+      segments?: string[];
+    };
+
+    const aiFactors = parsed.factors || {};
+    const actualCause = parsed.actualCause?.trim() || "";
+    const recommendation = parsed.recommendation?.trim() || "";
+    const segments = Array.isArray(parsed.segments) ? parsed.segments.slice(0, 2) : [];
+    const traffic = String(aiFactors.traffic || "");
+    const water = String(aiFactors.waterPollution || "");
+    const noise = String(aiFactors.noisePollution || "");
+    const air =
+      typeof aiFactors.airPollution === "number"
+        ? clamp(Math.round(aiFactors.airPollution), 40, 420)
+        : NaN;
+
+    const isInsufficient =
+      /insufficient local evidence/i.test(actualCause) ||
+      /insufficient local evidence/i.test(recommendation);
+
+    const validFactors =
+      ["Low", "Medium", "High", "Extreme"].includes(traffic) &&
+      ["Safe", "Risky", "Unsafe"].includes(water) &&
+      ["Normal", "High", "Extreme"].includes(noise) &&
+      Number.isFinite(air);
+
+    if (
+      isInsufficient ||
+      !validFactors ||
+      actualCause.length < 24 ||
+      recommendation.length < 24 ||
+      segments.length === 0
+    ) {
+      return {
+        ...fallback,
+        actualCause:
+          fallback.actualCause +
+          " Symptom evidence is limited in current records for this cluster.",
+        recommendation:
+          "Capture structured symptoms for each patient in this area cluster and re-run AI reasoning for higher confidence.",
+      };
+    }
+
+    return {
+      factors: {
+        traffic,
+        airPollution: air,
+        waterPollution: water,
+        noisePollution: noise,
+        lastUpdated: new Date().toISOString(),
+      },
+      actualCause,
+      recommendation,
+      segments,
+    };
+  } catch (e) {
+    console.error("Failed to parse Gemini response:", e);
+    return fallback;
+  }
+}
+
 export async function GET() {
   try {
     const sql = `
       WITH latest_condition AS (
         SELECT
           p.id AS patient_id,
+          p.name AS patient_name,
           TRIM(p.address) AS area,
           COALESCE(NULLIF(TRIM(c.diagnosis), ''), NULLIF(TRIM(p.diagnosis), ''), 'General') AS disease,
           COALESCE(NULLIF(TRIM(c.symptoms_observed), ''), NULLIF(TRIM(p.symptoms), ''), '') AS problem
@@ -183,50 +307,75 @@ export async function GET() {
         ) c ON TRUE
         WHERE p.address IS NOT NULL
           AND TRIM(p.address) <> ''
+      ), ranked AS (
+        SELECT *,
+          ROW_NUMBER() OVER (PARTITION BY area, disease ORDER BY patient_id DESC) AS rn
+        FROM latest_condition
       )
       SELECT
         area,
         disease,
         NULLIF(STRING_AGG(DISTINCT NULLIF(problem, ''), ' | '), '') AS problem_summary,
-        COUNT(*) AS patient_count
-      FROM latest_condition
+        COUNT(*) AS patient_count,
+        COUNT(NULLIF(problem, '')) AS symptom_evidence_count,
+        COALESCE(
+          JSON_AGG(JSON_BUILD_OBJECT('name', patient_name, 'symptoms', NULLIF(problem, '')) ORDER BY rn)
+          FILTER (WHERE rn <= 5 AND NULLIF(problem, '') IS NOT NULL),
+          '[]'::json
+        ) AS sample_cases
+      FROM ranked
       GROUP BY area, disease
-      HAVING COUNT(*) >= 2
+      HAVING COUNT(*) >= 3
       ORDER BY patient_count DESC, area ASC
-      LIMIT 50
+      LIMIT 10
     `;
 
     const res = await query(sql);
-    const hotspots = (res.rows || []) as HotspotRow[];
+    const rows = (res.rows || []) as HotspotRow[];
 
-    const enrichedHotspots = hotspots.map((hotspot) => {
-      const patientCount = Number(hotspot.patient_count || 0);
-      const analysis = analyzeDiseaseAndProblem(
-        hotspot.disease,
-        hotspot.problem_summary,
-        patientCount,
-      );
+    const hotspots = await Promise.all(
+      rows.map(async (row) => {
+        const count = Number(row.patient_count);
+        const baseAnalysis = analyzeDiseaseAndProblem(
+          row.disease,
+          row.problem_summary,
+          count,
+          row.sample_cases,
+        );
 
-      return {
-        area: hotspot.area,
-        disease: hotspot.disease,
-        problemSummary: hotspot.problem_summary || "Not specified",
-        patient_count: patientCount,
-        environmentalFactors: analysis.factors,
-        actualCause: analysis.actualCause,
-        recommendation: analysis.recommendation,
-        segments: analysis.segments,
-        methodology: "Dynamic disease/problem correlation model",
-      };
-    });
+        // Gemini reasons from real same-area, same-disease patient rows from DB.
+        const groundedAnalysis = await analyzeWithGemini(
+          row.area,
+          row.disease,
+          row.problem_summary,
+          count,
+          row.sample_cases,
+          baseAnalysis,
+        );
+
+        return {
+          area: row.area,
+          disease: row.disease,
+          problemSummary: row.problem_summary || "Not specified",
+          patient_count: count,
+          symptomEvidenceCount: Number(row.symptom_evidence_count || 0),
+          sampleCases: (row.sample_cases || []).slice(0, 3),
+          environmentalFactors: groundedAnalysis.factors,
+          actualCause: groundedAnalysis.actualCause,
+          recommendation: groundedAnalysis.recommendation,
+          segments: groundedAnalysis.segments,
+          methodology: "Gemini reasoning on DB disease clusters with evidence fallback",
+        };
+      }),
+    );
 
     return NextResponse.json({
       success: true,
-      data: enrichedHotspots,
+      data: hotspots,
       summary: {
-        totalHotspots: enrichedHotspots.length,
-        mostAffectedArea: enrichedHotspots[0]?.area || "N/A",
-        mostCommonDisease: enrichedHotspots[0]?.disease || "N/A",
+        totalHotspots: hotspots.length,
+        mostAffectedArea: hotspots[0]?.area || "N/A",
+        mostCommonDisease: hotspots[0]?.disease || "N/A",
       },
     });
   } catch (error) {
@@ -234,4 +383,3 @@ export async function GET() {
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
-

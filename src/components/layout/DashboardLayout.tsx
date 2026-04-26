@@ -27,6 +27,8 @@ import {
   User,
   Settings,
   LucideIcon,
+  MessageCircle,
+  X,
 } from "lucide-react";
 import {
   Avatar,
@@ -41,6 +43,9 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
 
 const iconMap: { [key: string]: LucideIcon } = {
   LayoutDashboard,
@@ -73,6 +78,12 @@ export default function DashboardLayout({
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [isClient, setIsClient] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatLoading, setChatLoading] = useState(false);
+  const [chatInput, setChatInput] = useState("");
+  const [chatItems, setChatItems] = useState<Array<{ role: "user" | "ai"; text: string }>>([
+    { role: "ai", text: "Ask me anything for your current sector workflow." },
+  ]);
 
   useEffect(() => {
     setIsClient(true);
@@ -192,6 +203,28 @@ export default function DashboardLayout({
   const goTo = (path: string) => {
     setSidebarOpen(false);
     router.push(path);
+  };
+
+  const sendSectorChat = async () => {
+    const message = chatInput.trim();
+    if (!message || !userType || chatLoading) return;
+    setChatItems((prev) => [...prev, { role: "user", text: message }]);
+    setChatInput("");
+    setChatLoading(true);
+    try {
+      const res = await fetch("/api/ai/patient-reasoning", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message, sector: userType }),
+      });
+      const json = await res.json();
+      const text = json?.data?.reply || json?.error || "No response from AI.";
+      setChatItems((prev) => [...prev, { role: "ai", text }]);
+    } catch {
+      setChatItems((prev) => [...prev, { role: "ai", text: "Failed to connect AI service." }]);
+    } finally {
+      setChatLoading(false);
+    }
   };
 
   return (
@@ -398,6 +431,47 @@ export default function DashboardLayout({
         <main className="relative z-10 flex-1 overflow-y-auto px-6 lg:px-10 pb-10">
           <div className="max-w-[1400px] mx-auto w-full py-4">{children}</div>
         </main>
+
+        <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end gap-3">
+          {chatOpen && (
+            <div className="w-[360px] max-w-[90vw] bg-card border border-border rounded-2xl shadow-2xl overflow-hidden">
+              <div className="p-3 border-b border-border flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <p className="text-sm font-black">AI Sector Chat</p>
+                  <Badge variant="outline" className="text-[10px] uppercase">{userType}</Badge>
+                </div>
+                <button className="p-1 rounded hover:bg-muted" onClick={() => setChatOpen(false)}>
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+              <div className="h-64 overflow-y-auto p-3 space-y-2 bg-muted/20">
+                {chatItems.map((m, i) => (
+                  <div key={i} className={`text-sm p-2 rounded-xl ${m.role === "user" ? "bg-blue-600 text-white ml-8" : "bg-background border border-border mr-8"}`}>
+                    {m.text}
+                  </div>
+                ))}
+              </div>
+              <div className="p-3 space-y-2">
+                <Textarea
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  placeholder="Ask sector-specific workflow, risks, guidance..."
+                  className="min-h-[72px]"
+                />
+                <Button className="w-full" onClick={sendSectorChat} disabled={chatLoading}>
+                  {chatLoading ? "Thinking..." : "Send"}
+                </Button>
+              </div>
+            </div>
+          )}
+          <button
+            className="h-12 w-12 rounded-full bg-blue-600 text-white shadow-lg flex items-center justify-center"
+            onClick={() => setChatOpen((v) => !v)}
+            aria-label="Toggle AI sector chat"
+          >
+            <MessageCircle className="h-5 w-5" />
+          </button>
+        </div>
       </div>
     </div>
   );

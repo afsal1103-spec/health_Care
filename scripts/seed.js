@@ -55,13 +55,17 @@ async function ensureUser(email, passwordPlain, userType) {
   return ins.rows[0].id;
 }
 
-async function ensurePatient(email, { name, mobile_no = '9876543210', address = 'Chennai' }) {
+async function ensurePatient(email, { name, mobile_no = '9876543210', address = 'Chennai', gender = 'Female', age = 28 }) {
   const userId = await ensureUser(email, 'Patient@123', 'patient');
   const res = await q('SELECT p.id FROM patients p WHERE p.user_id = $1', [userId]);
-  if (res.rows.length > 0) return res.rows[0].id;
+  if (res.rows.length > 0) {
+    // Update missing fields if patient exists
+    await q('UPDATE patients SET gender = $1, age = $2 WHERE user_id = $3', [gender, age, userId]);
+    return res.rows[0].id;
+  }
   const ins = await q(
-    'INSERT INTO patients (user_id, name, mobile_no, address) VALUES ($1, $2, $3, $4) RETURNING id',
-    [userId, name, mobile_no, address]
+    'INSERT INTO patients (user_id, name, mobile_no, address, gender, age) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
+    [userId, name, mobile_no, address, gender, age]
   );
   return ins.rows[0].id;
 }
@@ -85,13 +89,53 @@ async function ensureDoctor(email, { name, specialist = 'General Physician', con
 
 async function ensureMedicalist(email, { name, contact = '9876598765', department = 'Pharmacy' }) {
   const userId = await ensureUser(email, 'Medical@123', 'medicalist');
-  const res = await q('SELECT m.id FROM medicalists m WHERE m.user_id = $1', [userId]);
-  if (res.rows.length > 0) return res.rows[0].id;
-  const ins = await q(
-    'INSERT INTO medicalists (user_id, name, contact, department, upi_id) VALUES ($1, $2, $3, $4, $5) RETURNING id',
-    [userId, name, contact, department, 'medical@upi']
-  );
-  return ins.rows[0].id;
+  const res = await q('SELECT m.id, m.medical_id FROM medicalists m WHERE m.user_id = $1', [userId]);
+  
+  let medicalistId;
+  let medicalId;
+
+  if (res.rows.length > 0) {
+    medicalistId = res.rows[0].id;
+    medicalId = res.rows[0].medical_id;
+  } else {
+    const ins = await q(
+      'INSERT INTO medicalists (user_id, name, contact, department, upi_id) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+      [userId, name, contact, department, 'medical@upi']
+    );
+    medicalistId = ins.rows[0].id;
+  }
+
+  // Ensure a medical record exists and is linked
+  if (!medicalId) {
+    const medRes = await q(
+      'INSERT INTO medicals (name, contact, address, is_approved, upi_id) VALUES ($1, $2, $3, true, $4) RETURNING id',
+      [name + " Pharmacy", contact, "Seed Address", 'medical@upi']
+    );
+    medicalId = medRes.rows[0].id;
+    await q('UPDATE medicalists SET medical_id = $1 WHERE id = $2', [medicalId, medicalistId]);
+  }
+
+  return { medicalistId, medicalId };
+}
+
+async function seedInventory(medicalId) {
+  const medicines = [
+    { name: 'Paracetamol', price: 5, qty: 100 },
+    { name: 'Amoxicillin', price: 15, qty: 50 },
+    { name: 'Cetirizine', price: 8, qty: 80 },
+    { name: 'Ibuprofen', price: 12, qty: 60 },
+    { name: 'Azithromycin', price: 45, qty: 30 },
+  ];
+
+  for (const med of medicines) {
+    await q(
+      `INSERT INTO medical_inventory (medical_id, medicine_name, unit_price, quantity, low_stock_threshold)
+       VALUES ($1, $2, $3, $4, 10)
+       ON CONFLICT (medical_id, medicine_name) DO UPDATE 
+       SET unit_price = EXCLUDED.unit_price, quantity = EXCLUDED.quantity`,
+      [medicalId, med.name, med.price, med.qty]
+    );
+  }
 }
 
 async function seedAppointments(patientId, doctorId) {
@@ -165,8 +209,9 @@ async function main() {
 
   const patientId = await ensurePatient('jane.patient@example.com', { name: 'Jane Patient' });
   const doctorId = await ensureDoctor('dr.arun@example.com', { name: 'Dr. Arun Kumar', specialist: 'Neurologist', education: 'MBBS, MD', fee: 800 });
-  await ensureMedicalist('pharma.raj@example.com', { name: 'Rajesh Kumar' });
+  const { medicalId } = await ensureMedicalist('pharma.raj@example.com', { name: 'Rajesh Kumar' });
 
+  await seedInventory(medicalId);
   await seedAppointments(patientId, doctorId);
   await seedConsultation(patientId, doctorId);
   await seedTransactions(patientId, doctorId);

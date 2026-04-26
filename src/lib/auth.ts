@@ -42,7 +42,7 @@ export const authOptions: NextAuthOptions = {
               "SELECT * FROM patients WHERE user_id = $1",
               [user.id],
             );
-            roleDetails = toCamelCase(res.rows[0]);
+            roleDetails = toCamelCase(res.rows[0] ?? null) as Record<string, unknown> | null;
           } else if (user.user_type === "doctor") {
             const res = await query(
               "SELECT * FROM doctors WHERE user_id = $1",
@@ -52,7 +52,7 @@ export const authOptions: NextAuthOptions = {
               console.error("Doctor profile not found for user:", user.id);
               return null;
             }
-            roleDetails = toCamelCase(res.rows[0]);
+            roleDetails = toCamelCase(res.rows[0]) as Record<string, unknown>;
             
             // Check doctor approval status
             if (roleDetails.approvalStatus !== 'approved') {
@@ -68,7 +68,7 @@ export const authOptions: NextAuthOptions = {
               console.error("Medicalist profile not found for user:", user.id);
               return null;
             }
-            roleDetails = toCamelCase(res.rows[0]);
+            roleDetails = toCamelCase(res.rows[0]) as Record<string, unknown>;
           } else if (user.user_type === "superadmin") {
             // superadmin has no dedicated role table — synthesize roleDetails from users row
             roleDetails = {

@@ -98,25 +98,9 @@ async function migrate() {
       ADD COLUMN IF NOT EXISTS manual_utr TEXT,
       ADD COLUMN IF NOT EXISTS payment_proof_url TEXT,
       ADD COLUMN IF NOT EXISTS metadata JSONB,
-      ADD COLUMN IF NOT EXISTS medical_id INTEGER REFERENCES medicals(id) ON DELETE SET NULL;
+      ADD COLUMN IF NOT EXISTS medical_id INTEGER REFERENCES medicals(id) ON DELETE SET NULL,
+      ADD COLUMN IF NOT EXISTS transaction_date DATE DEFAULT CURRENT_DATE;
     `);
-
-    // Clean up Razorpay columns if they exist (optional, keeping for flexibility)
-    console.log('Cleaning up Razorpay columns (if needed)...');
-    // await client.query(`ALTER TABLE transactions DROP COLUMN IF EXISTS razorpay_order_id, DROP COLUMN IF EXISTS razorpay_payment_id, DROP COLUMN IF EXISTS razorpay_signature;`);
-
-    // Fix status check constraint
-    console.log('Updating appointments status constraint...');
-    try {
-      await client.query(`ALTER TABLE appointments DROP CONSTRAINT IF EXISTS appointments_status_check;`);
-      await client.query(`
-        ALTER TABLE appointments 
-        ADD CONSTRAINT appointments_status_check 
-        CHECK (status IN ('pending', 'accepted', 'rejected', 'cancelled', 'completed', 'altered', 'confirmed'));
-      `);
-    } catch (e) {
-      console.log('Note: Could not update status constraint, it might not exist or already be correct.');
-    }
 
     // 6. Create/Update medicals table (managed by superadmin)
     console.log('Creating/Updating medicals table...');
@@ -143,11 +127,51 @@ async function migrate() {
     console.log('Updating medicalists table...');
     await client.query(`
       ALTER TABLE medicalists 
-      ADD COLUMN IF NOT EXISTS approval_status TEXT DEFAULT 'pending' CHECK (approval_status IN ('pending', 'approved', 'rejected')),
+      ADD COLUMN IF NOT EXISTS approval_status TEXT DEFAULT 'pending',
       ADD COLUMN IF NOT EXISTS medical_id INTEGER REFERENCES medicals(id) ON DELETE SET NULL,
       ADD COLUMN IF NOT EXISTS upi_id TEXT,
       ADD COLUMN IF NOT EXISTS account_details JSONB;
     `);
+
+    // 8. Pharmacy Flow Tables
+    console.log('Creating pharmacy flow tables...');
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS medical_inventory (
+        id SERIAL PRIMARY KEY,
+        medical_id INTEGER NOT NULL REFERENCES medicals(id) ON DELETE CASCADE,
+        medicine_name TEXT NOT NULL,
+        unit_price NUMERIC(10,2) NOT NULL DEFAULT 0,
+        quantity INTEGER NOT NULL DEFAULT 0,
+        low_stock_threshold INTEGER NOT NULL DEFAULT 10,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (medical_id, medicine_name)
+      );
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS medical_transaction_items (
+        id SERIAL PRIMARY KEY,
+        transaction_id INTEGER NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+        medicine_name TEXT NOT NULL,
+        quantity INTEGER NOT NULL,
+        unit_price NUMERIC(10,2) NOT NULL,
+        line_total NUMERIC(10,2) NOT NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // 9. Fix status check constraint
+    console.log('Updating appointments status constraint...');
+    try {
+      await client.query(`ALTER TABLE appointments DROP CONSTRAINT IF EXISTS appointments_status_check;`);
+      await client.query(`
+        ALTER TABLE appointments 
+        ADD CONSTRAINT appointments_status_check 
+        CHECK (status IN ('pending', 'accepted', 'rejected', 'cancelled', 'completed', 'altered', 'confirmed'));
+      `);
+    } catch (e) {
+      console.log('Note: Could not update status constraint, it might not exist or already be correct.');
+    }
 
     // 5. Cleanup roles (optional but good for consistency)
     console.log('Cleaning up roles...');

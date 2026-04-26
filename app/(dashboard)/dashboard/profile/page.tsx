@@ -296,7 +296,7 @@ export default function ProfilePage() {
   }
 
   const userType = session?.user?.userType;
-  const userName = profile?.name || session?.user?.email || "User";
+  const userName = String(profile?.name || session?.user?.email || "User");
   const initials = userName
     .split(" ")
     .map((part: string) => part[0])
@@ -481,7 +481,7 @@ export default function ProfilePage() {
                     <Label className="text-xs font-black uppercase text-gray-400">Gender</Label>
                     <div className="relative">
                       <UserCircle className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 z-10" />
-                      <Select value={profile?.gender || ""} onValueChange={(val) => setProfile({ ...profile, gender: val })}>
+                      <Select value={String(profile?.gender || "")} onValueChange={(val) => setProfile({ ...profile, gender: val })}>
                         <SelectTrigger className="pl-10 h-12 border-2 rounded-xl">
                           <SelectValue placeholder="Select gender" />
                         </SelectTrigger>

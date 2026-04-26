@@ -50,10 +50,10 @@ export async function GET() {
     });
 
     const summary = {
-      pending: decoratedRows.filter((row) => row.paymentStatus === "pending").length,
-      verificationPending: decoratedRows.filter((row) => row.paymentStatus === "verification_pending")
+      pending: decoratedRows.filter((row: any) => row.paymentStatus === "pending").length,
+      verificationPending: decoratedRows.filter((row: any) => row.paymentStatus === "verification_pending")
         .length,
-      paid: decoratedRows.filter((row) => row.paymentStatus === "paid").length,
+      paid: decoratedRows.filter((row: any) => row.paymentStatus === "paid").length,
     };
 
     return NextResponse.json({

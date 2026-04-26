@@ -3,6 +3,8 @@ import { query, toCamelCase } from '@/lib/db';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 
+export const dynamic = "force-dynamic";
+
 function parsePositiveInt(value: string | null): number | null {
   if (!value) return null;
   const parsed = Number.parseInt(value, 10);
@@ -55,22 +57,22 @@ export async function GET(request: NextRequest) {
       ORDER BY c.consultation_date DESC, c.created_at DESC
       LIMIT 20
     `;
-    const consultationsParams = date ? [patient.id, date] : [patient.id];
+    const consultationsParams = date ? [patient.id as any, date] : [patient.id as any];
     const consultationsResult = await query(consultationsSql, consultationsParams);
 
-    const consultations = toCamelCase(consultationsResult.rows) as Array<Record<string, unknown>>;
+    const consultations = toCamelCase(consultationsResult.rows) as Array<Record<string, any>>;
     const consultationIds = consultations.map((c) => Number(c.id)).filter((id) => Number.isFinite(id));
 
-    const prescriptionsByConsultationId = new Map<number, Array<Record<string, unknown>>>();
+    const prescriptionsByConsultationId = new Map<number, Array<Record<string, any>>>();
     if (consultationIds.length > 0) {
       const prescriptionsResult = await query(
         `SELECT *
          FROM prescriptions
          WHERE consultation_id = ANY($1::int[]) AND is_active = true
          ORDER BY consultation_id, id`,
-        [consultationIds],
+        [consultationIds as any],
       );
-      const prescriptions = toCamelCase(prescriptionsResult.rows) as Array<Record<string, unknown>>;
+      const prescriptions = toCamelCase(prescriptionsResult.rows) as Array<Record<string, any>>;
       for (const prescription of prescriptions) {
         const consultationId = Number(prescription.consultationId);
         if (!prescriptionsByConsultationId.has(consultationId)) {
@@ -93,18 +95,18 @@ export async function GET(request: NextRequest) {
       ORDER BY a.appointment_date DESC, a.appointment_time DESC
       LIMIT 20
     `;
-    const appointmentsParams = date ? [patient.id, date] : [patient.id];
+    const appointmentsParams = date ? [patient.id as any, date] : [patient.id as any];
     const appointmentsResult = await query(appointmentsSql, appointmentsParams);
 
     const transactionsSql = `
       SELECT *
       FROM transactions
       WHERE patient_id = $1
-      ${date ? 'AND transaction_date <= $2' : ''}
-      ORDER BY transaction_date DESC, created_at DESC
-      LIMIT 10
+      ${date ? 'AND transaction_date::date = $2' : ''}
+      ORDER BY transaction_date DESC
+      LIMIT 20
     `;
-    const transactionsParams = date ? [patient.id, date] : [patient.id];
+    const transactionsParams = date ? [patient.id as any, date] : [patient.id as any];
     const transactionsResult = await query(transactionsSql, transactionsParams);
 
     return NextResponse.json({
